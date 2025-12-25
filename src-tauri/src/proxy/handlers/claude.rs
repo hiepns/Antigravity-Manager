@@ -25,26 +25,62 @@ pub async fn handle_messages(
     State(state): State<AppState>,
     Json(request): Json<ClaudeRequest>,
 ) -> Response {
-    crate::modules::logger::log_info(&format!("Received Claude request for model: {}", request.model));
+    // 获取最新一条“有意义”的消息内容（用于日志记录和后台任务检测）
+    // 策略：反向遍历，首先筛选出所有角色为 "user" 的消息，然后从中找到第一条非 "Warmup" 且非空的文本消息
+    let meaningful_msg = request.messages.iter().rev()
+        .filter(|m| m.role == "user")
+        .find_map(|m| {
+            let content = match &m.content {
+                crate::proxy::mappers::claude::models::MessageContent::String(s) => s.as_str(),
+                crate::proxy::mappers::claude::models::MessageContent::Array(arr) => {
+                    arr.iter().find_map(|block| match block {
+                        crate::proxy::mappers::claude::models::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    }).unwrap_or("")
+                }
+            };
+            
+            if content.trim().starts_with("Warmup") || content.is_empty() || content.contains("<system-reminder>") {
+                None 
+            } else {
+                Some(content)
+            }
+        });
 
-    // 1. 获取 UpstreamClient
+    // 如果找不到“有意义”的用户消息，就回退到显示全量消息列表中的最后一条原始消息（哪怕是 Warmup 或来自 assistant）
+    let latest_msg = meaningful_msg.unwrap_or_else(|| {
+        request.messages.last().map(|m| match &m.content {
+            crate::proxy::mappers::claude::models::MessageContent::String(s) => s.as_str(),
+            crate::proxy::mappers::claude::models::MessageContent::Array(arr) => {
+                arr.iter().find_map(|block| match block {
+                    crate::proxy::mappers::claude::models::ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                }).unwrap_or("[No Text Block]")
+            }
+        }).unwrap_or("[No Messages]")
+    });
+    
+    crate::modules::logger::log_info(&format!("Received Claude request for model: {}, content_preview: {:.100}...", request.model, latest_msg));
+
+    // 1. 获取 会话 ID (已废弃基于内容的哈希，改用 TokenManager 内部的时间窗口锁定)
+    let session_id: Option<&str> = None;
+
+    // 2. 获取 UpstreamClient
     let upstream = state.upstream.clone();
     
-    // 2. 准备闭包
-    // 克隆 request 供闭包使用
+    // 3. 准备闭包
     let request_for_body = request.clone();
     let token_manager = state.token_manager;
     
     let pool_size = token_manager.len();
     let max_attempts = MAX_RETRY_ATTEMPTS.min(pool_size).max(1);
 
-    // 简化方案：直接在这里处理重试逻辑
     let mut last_error = String::new();
     
     for attempt in 0..max_attempts {
-        // 4. 获取 Token
+        // 4. 获取 Token (使用内置的时间窗口锁定机制)
         let model_group = crate::proxy::common::utils::infer_quota_group(&request_for_body.model);
-        let (access_token, project_id) = match token_manager.get_token(&model_group).await {
+        let (access_token, project_id, email) = match token_manager.get_token(&model_group, session_id).await {
             Ok(t) => t,
             Err(e) => {
                  return (
@@ -59,14 +95,36 @@ pub async fn handle_messages(
                 ).into_response();
             }
         };
+
+        tracing::info!("Using account: {} for request", email);
         
-        // 构建请求体
-        let mapped_model = crate::proxy::common::model_mapping::resolve_model_route(
+        // 5. 构建请求体
+        let mut mapped_model = crate::proxy::common::model_mapping::resolve_model_route(
             &request_for_body.model,
             &*state.custom_mapping.read().await,
             &*state.openai_mapping.read().await,
             &*state.anthropic_mapping.read().await,
         );
+
+        // --- 核心优化：智能识别并拦截后台自动请求 ---
+        // 关键词识别：标题生成、摘要提取、下一步提示建议等
+        let is_background_task = latest_msg.contains("write a 5-10 word title") 
+            || latest_msg.contains("Respond with the title")
+            || latest_msg.contains("Concise summary")
+            || latest_msg.contains("prompt suggestion generator");
+
+        if is_background_task {
+             mapped_model = "gemini-2.5-flash".to_string();
+             tracing::info!("检测到后台自动任务 ({}...)，已智能重定向到廉价节点: {}", 
+                latest_msg.chars().take(200).collect::<String>(), 
+                mapped_model
+             );
+        } else {
+             tracing::info!("检测到正常用户请求 ({}...)，保持原模型: {}", 
+                latest_msg.chars().take(200).collect::<String>(), 
+                mapped_model
+             );
+        }
         
         // 传递映射后的模型名
         let mut request_with_mapped = request_for_body.clone();

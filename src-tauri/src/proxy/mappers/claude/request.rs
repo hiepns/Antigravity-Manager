@@ -5,8 +5,8 @@ use super::models::*;
 // use crate::proxy::common::model_mapping::map_claude_model_to_gemini;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use once_cell::sync::Lazy;
-use regex::Regex;
+// use once_cell::sync::Lazy;
+// use regex::Regex;
 
 /// 转换 Claude 请求为 Gemini v1internal 格式
 pub fn transform_claude_request_in(

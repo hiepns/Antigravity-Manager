@@ -105,6 +105,32 @@ function Settings() {
         }
     };
 
+    const handleSelectAntigravityPath = async () => {
+        try {
+            const selected = await open({
+                directory: false,
+                multiple: false,
+                title: t('settings.advanced.antigravity_path_select'),
+            });
+            if (selected && typeof selected === 'string') {
+                setFormData({ ...formData, antigravity_executable: selected });
+            }
+        } catch (error) {
+            showToast(`${t('common.error')}: ${error}`, 'error');
+        }
+    };
+
+
+    const handleDetectAntigravityPath = async () => {
+        try {
+            const path = await invoke<string>('get_antigravity_path', { bypassConfig: true });
+            setFormData({ ...formData, antigravity_executable: path });
+            showToast(t('settings.advanced.antigravity_path_detected'), 'success');
+        } catch (error) {
+            showToast(`${t('common.error')}: ${error}`, 'error');
+        }
+    };
+
     const handleCheckUpdate = async () => {
         setIsCheckingUpdate(true);
         setUpdateInfo(null);
@@ -356,6 +382,45 @@ function Settings() {
                                     </button>
                                 </div>
                                 <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">{t('settings.advanced.data_dir_desc')}</p>
+                            </div>
+
+                            {/* 反重力程序路径 */}
+                            <div>
+                                <label className="block text-sm font-medium text-gray-900 dark:text-base-content mb-1">
+                                    {t('settings.advanced.antigravity_path')}
+                                </label>
+                                <div className="flex gap-2">
+                                    <input
+                                        type="text"
+                                        className="flex-1 px-4 py-4 border border-gray-200 dark:border-base-300 rounded-lg bg-gray-50 dark:bg-base-200 text-gray-900 dark:text-base-content font-medium"
+                                        value={formData.antigravity_executable || ''}
+                                        placeholder={t('settings.advanced.antigravity_path_placeholder')}
+                                        onChange={(e) => setFormData({ ...formData, antigravity_executable: e.target.value })}
+                                    />
+                                    {formData.antigravity_executable && (
+                                        <button
+                                            className="px-4 py-2 border border-gray-200 dark:border-base-300 text-red-600 dark:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors"
+                                            onClick={() => setFormData({ ...formData, antigravity_executable: undefined })}
+                                        >
+                                            {t('common.clear')}
+                                        </button>
+                                    )}
+                                    <button
+                                        className="px-4 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 transition-colors"
+                                        onClick={handleDetectAntigravityPath}
+                                    >
+                                        {t('settings.advanced.detect_btn')}
+                                    </button>
+                                    <button
+                                        className="px-4 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 transition-colors"
+                                        onClick={handleSelectAntigravityPath}
+                                    >
+                                        {t('settings.advanced.select_btn')}
+                                    </button>
+                                </div>
+                                <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
+                                    {t('settings.advanced.antigravity_path_desc')}
+                                </p>
                             </div>
 
                             <div className="border-t border-gray-200 dark:border-base-200 pt-4">

@@ -17,8 +17,11 @@ pub struct AppState {
     pub anthropic_mapping: Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
     pub openai_mapping: Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
     pub custom_mapping: Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
+    #[allow(dead_code)]
     pub request_timeout: u64,  // API 请求超时(秒)
+    #[allow(dead_code)]
     pub thought_signature_map: Arc<tokio::sync::Mutex<std::collections::HashMap<String, String>>>, // 思维链签名映射 (ID -> Signature)
+    #[allow(dead_code)]
     pub upstream_proxy: Arc<tokio::sync::RwLock<crate::proxy::config::UpstreamProxyConfig>>,
     pub upstream: Arc<crate::proxy::upstream::client::UpstreamClient>,
 }

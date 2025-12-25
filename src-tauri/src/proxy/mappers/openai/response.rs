@@ -1,7 +1,7 @@
 use super::models::*;
 use serde_json::Value;
-use chrono::Utc;
-use uuid::Uuid;
+// use chrono::Utc;
+// use uuid::Uuid;
 
 pub fn transform_openai_response(gemini_response: &Value) -> OpenAIResponse {
     // 解包 response 字段

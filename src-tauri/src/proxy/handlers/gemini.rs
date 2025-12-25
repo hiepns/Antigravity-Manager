@@ -49,12 +49,14 @@ pub async fn handle_generate(
 
         // 4. 获取 Token
         let model_group = crate::proxy::common::utils::infer_quota_group(&mapped_model);
-        let (access_token, project_id) = match token_manager.get_token(&model_group).await {
+        let (access_token, project_id, email) = match token_manager.get_token(&model_group, None).await {
             Ok(t) => t,
             Err(e) => {
                 return Err((StatusCode::SERVICE_UNAVAILABLE, format!("Token error: {}", e)));
             }
         };
+
+        tracing::info!("Using account: {} for request", email);
 
         // 5. 包装请求 (project injection)
         let wrapped_body = wrap_request(&body, &project_id, &mapped_model);
@@ -185,7 +187,7 @@ pub async fn handle_generate(
 
 pub async fn handle_list_models(State(state): State<AppState>) -> Result<impl IntoResponse, (StatusCode, String)> {
     let model_group = "gemini";
-    let (access_token, _) = state.token_manager.get_token(model_group).await
+    let (access_token, _, _) = state.token_manager.get_token(model_group, None).await
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, format!("Token error: {}", e)))?;
 
     // Fetch from upstream
@@ -235,8 +237,8 @@ pub async fn handle_get_model(Path(model_name): Path<String>) -> impl IntoRespon
 }
 
 pub async fn handle_count_tokens(State(state): State<AppState>, Path(_model_name): Path<String>, Json(_body): Json<Value>) -> Result<impl IntoResponse, (StatusCode, String)> {
-     let model_group = "gemini";
-    let (_access_token, _project_id) = state.token_manager.get_token(model_group).await
+    let model_group = "gemini";
+    let (_access_token, _project_id, _) = state.token_manager.get_token(model_group, None).await
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, format!("Token error: {}", e)))?;
     
     Ok(Json(json!({"totalTokens": 0})))

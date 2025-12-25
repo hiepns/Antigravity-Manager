@@ -321,6 +321,7 @@ pub async fn import_from_db(app: tauri::AppHandle) -> Result<Account, String> {
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn import_custom_db(app: tauri::AppHandle, path: String) -> Result<Account, String> {
     // 调用重构后的自定义导入函数
     let mut account = modules::migration::import_from_custom_db_path(path).await?;
@@ -428,8 +429,20 @@ pub async fn show_main_window(window: tauri::Window) -> Result<(), String> {
 
 /// 获取 Antigravity 可执行文件路径
 #[tauri::command]
-pub async fn get_antigravity_path() -> Result<String, String> {
-    match modules::process::get_antigravity_executable_path() {
+pub async fn get_antigravity_path(bypass_config: Option<bool>) -> Result<String, String> {
+    // 1. 优先从配置查询 (除非明确要求绕过)
+    if bypass_config != Some(true) {
+        if let Ok(config) = crate::modules::config::load_app_config() {
+            if let Some(path) = config.antigravity_executable {
+                if std::path::Path::new(&path).exists() {
+                    return Ok(path);
+                }
+            }
+        }
+    }
+
+    // 2. 执行实时探测
+    match crate::modules::process::get_antigravity_executable_path() {
         Some(path) => Ok(path.to_string_lossy().to_string()),
         None => Err("未找到 Antigravity 安装路径".to_string())
     }

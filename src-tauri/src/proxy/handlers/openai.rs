@@ -29,12 +29,14 @@ pub async fn handle_chat_completions(
     for attempt in 0..max_attempts {
         // 2. 获取 Token
         let model_group = crate::proxy::common::utils::infer_quota_group(&openai_req.model);
-        let (access_token, project_id) = match token_manager.get_token(&model_group).await {
+        let (access_token, project_id, email) = match token_manager.get_token(&model_group, None).await {
             Ok(t) => t,
             Err(e) => {
                 return Err((StatusCode::SERVICE_UNAVAILABLE, format!("Token error: {}", e)));
             }
         };
+
+        tracing::info!("Using account: {} for request", email);
 
         // 3. 转换请求
         let mapped_model = crate::proxy::common::model_mapping::resolve_model_route(
