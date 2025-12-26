@@ -3,7 +3,7 @@
 
 use reqwest::{header, Client, Response};
 use serde_json::Value;
-use tokio::time::{sleep, Duration};
+use tokio::time::Duration;
 
 // 生产环境端点
 const V1_INTERNAL_BASE_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal";
@@ -88,185 +88,11 @@ impl UpstreamClient {
     /// 
     /// # Returns
     /// HTTP Response
-    pub async fn call_v1_internal_with_retry<F, B>(
-        &self,
-        method: &str,
-        query_string: Option<&str>,
-        mut get_credentials: F,
-        build_body: B,
-        max_attempts: usize,
-    ) -> Result<Response, String>
-    where
-        F: FnMut() -> Result<(String, String), String>, // () -> (access_token, project_id)
-        B: Fn(&str) -> Result<Value, String>,           // project_id -> body
-    {
-        let mut last_error = String::new();
+    // 已移除弃用的重试方法 (call_v1_internal_with_retry)
 
-        for attempt in 0..max_attempts {
-            // 1. 获取凭证（可能轮换账号）
-            let (access_token, project_id) = match get_credentials() {
-                Ok(creds) => creds,
-                Err(e) => {
-                    last_error = format!("Failed to get credentials: {}", e);
-                    continue;
-                }
-            };
+    // 已移除弃用的辅助方法 (parse_retry_delay)
 
-            // 2. 调用闭包构建请求体
-            let body = match build_body(&project_id) {
-                Ok(b) => b,
-                Err(e) => {
-                    return Err(format!("Failed to build request body: {}", e));
-                }
-            };
-
-            // 3. 发送请求
-            let response = match self
-                .call_v1_internal(method, &access_token, body, query_string)
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    last_error = format!("Network error: {}", e);
-                    tracing::warn!(
-                        "Network error on attempt {}/{}: {}",
-                        attempt + 1,
-                        max_attempts,
-                        e
-                    );
-                    continue;
-                }
-            };
-
-            let status = response.status();
-
-            // 4. 成功响应
-            if status.is_success() {
-                return Ok(response);
-            }
-
-            // 5. 处理 429 重试逻辑
-            if status.as_u16() == 429 {
-                // 读取错误详情
-                let error_text = response
-                    .text()
-                    .await
-                    .unwrap_or_else(|_| String::from("{}"));
-
-                last_error = error_text.clone();
-
-                // 解析 retry delay
-                if let Some(delay_ms) = self.parse_retry_delay(&error_text) {
-                    tracing::info!(
-                        "429 error, attempt {}/{}, delay: {}ms",
-                        attempt + 1,
-                        max_attempts,
-                        delay_ms
-                    );
-
-                    // 短延迟（<= 5000ms）: 等待后重试当前账号
-                    // 短延迟重试处理
-                    if delay_ms <= 5000 {
-                        let actual_delay = delay_ms + 200; // 加 200ms buffer
-                        tracing::info!(
-                            "Short delay, waiting {}ms on same account",
-                            actual_delay
-                        );
-                        sleep(Duration::from_millis(actual_delay)).await;
-                        // 不轮换账号，继续循环会重新调用 get_credentials
-                        continue;
-                    } else {
-                        // 长延迟: 立即轮换账号
-                        tracing::info!("Long delay, rotating to next account");
-                        continue; // get_credentials 会自动轮换
-                    }
-                } else {
-                    // 没有 retry delay，默认轮换
-                    tracing::warn!("429 without retry delay, rotating account");
-                    continue;
-                }
-            }
-
-            // 6. 其他 HTTP 错误
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| format!("HTTP {}", status));
-            
-            last_error = format!("HTTP {}: {}", status, error_text);
-            
-            // 对于 404/403/401 等，也可以尝试轮换账号
-            // 错误重连与轮换策略
-            if status.as_u16() == 404 || status.as_u16() == 403 || status.as_u16() == 401 {
-                tracing::warn!(
-                    "HTTP {} on attempt {}/{}, rotating account",
-                    status,
-                    attempt + 1,
-                    max_attempts
-                );
-                continue;
-            }
-            
-            // 其他错误直接返回
-            return Err(last_error);
-        }
-
-        Err(format!(
-            "Upstream call exhausted without a response after {} attempts. Last error: {}",
-            max_attempts, last_error
-        ))
-    }
-
-    /// 解析重试延迟
-    /// 
-    /// 从错误详情中解析重试等待时间
-    fn parse_retry_delay(&self, error_text: &str) -> Option<u64> {
-        // 尝试解析 JSON
-        if let Ok(json) = serde_json::from_str::<Value>(error_text) {
-            // 检查 error.retryInfo.retryDelay
-            if let Some(retry_info) = json.get("error").and_then(|e| e.get("retryInfo")) {
-                if let Some(delay_str) = retry_info.get("retryDelay").and_then(|d| d.as_str()) {
-                    return self.parse_duration_ms(delay_str);
-                }
-            }
-
-            // 检查 error.quotaResetDelay
-            if let Some(delay_str) = json
-                .get("error")
-                .and_then(|e| e.get("quotaResetDelay"))
-                .and_then(|d| d.as_str())
-            {
-                return self.parse_duration_ms(delay_str);
-            }
-        }
-
-        None
-    }
-
-    /// 解析 Duration 字符串为毫秒
-    /// 
-    /// 解析时间间隔字符串
-    /// 支持格式: "1.5s", "200ms", "1h16m0.667s"
-    fn parse_duration_ms(&self, duration_str: &str) -> Option<u64> {
-        use regex::Regex;
-        
-        // 简化版本，支持主要格式
-        // 完整实现需要 regex，这里先做简单的
-        if duration_str.ends_with("ms") {
-            duration_str
-                .trim_end_matches("ms")
-                .parse::<u64>()
-                .ok()
-        } else if duration_str.ends_with('s') {
-            duration_str
-                .trim_end_matches('s')
-                .parse::<f64>()
-                .ok()
-                .map(|x| (x * 1000.0) as u64)
-        } else {
-            None
-        }
-    }
+    // 已移除弃用的辅助方法 (parse_duration_ms)
 
     /// 获取可用模型列表
     /// 
@@ -315,12 +141,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_parse_duration() {
-        let client = UpstreamClient::new(None);
-
-        assert_eq!(client.parse_duration_ms("1500ms"), Some(1500));
-        assert_eq!(client.parse_duration_ms("1.5s"), Some(1500));
-        assert_eq!(client.parse_duration_ms("2s"), Some(2000));
-    }
 }

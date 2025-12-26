@@ -61,15 +61,27 @@ function Accounts() {
 
     // Pagination State
     const [currentPage, setCurrentPage] = useState(1);
+    const [localPageSize, setLocalPageSize] = useState<number | null>(null); // 本地分页大小状态
 
     // 动态计算分页条数
     const ITEMS_PER_PAGE = useMemo(() => {
+        // 优先使用本地设置的分页大小
+        if (localPageSize && localPageSize > 0) {
+            return localPageSize;
+        }
+
+        // 其次使用用户配置的固定值
+        if (config?.accounts_page_size && config.accounts_page_size > 0) {
+            return config.accounts_page_size;
+        }
+
+        // 回退到原有的动态计算逻辑
         if (!containerSize.height) return viewMode === 'grid' ? 6 : 8;
 
         if (viewMode === 'list') {
             const headerHeight = 36; // 缩深后的表头高度
             const rowHeight = 42;    // 极限压缩后的行高
-            // 计算能容纳多少行，至少 1 行
+            // 计算能容纳多少行,至少 1 行
             return Math.max(1, Math.floor((containerSize.height - headerHeight) / rowHeight));
         } else {
             const cardHeight = 158; // AccountCard 预估高度 (含间距)
@@ -84,7 +96,7 @@ function Accounts() {
             const rows = Math.max(1, Math.floor((containerSize.height + gap) / (cardHeight + gap)));
             return cols * rows;
         }
-    }, [containerSize, viewMode]);
+    }, [localPageSize, config?.accounts_page_size, containerSize, viewMode]);
 
     useEffect(() => {
         fetchAccounts();
@@ -538,6 +550,11 @@ function Accounts() {
                             onPageChange={handlePageChange}
                             totalItems={filteredAccounts.length}
                             itemsPerPage={ITEMS_PER_PAGE}
+                            onPageSizeChange={(newSize) => {
+                                setLocalPageSize(newSize);
+                                setCurrentPage(1); // 重置到第一页
+                            }}
+                            pageSizeOptions={[10, 20, 50, 100]}
                         />
                     </div>
                 )

@@ -13,12 +13,15 @@ pub struct AppConfig {
     pub default_export_path: Option<String>,
     #[serde(default)]
     pub proxy: ProxyConfig,
+    pub antigravity_executable: Option<String>, // [NEW] 手动指定的反重力程序路径
+    #[serde(default)]
+    pub auto_launch: bool,  // 开机自动启动
 }
 
 impl AppConfig {
     pub fn new() -> Self {
         Self {
-            language: "zh-CN".to_string(),
+            language: "zh".to_string(),
             theme: "system".to_string(),
             auto_refresh: false,
             refresh_interval: 15,
@@ -26,6 +29,8 @@ impl AppConfig {
             sync_interval: 5,
             default_export_path: None,
             proxy: ProxyConfig::default(),
+            antigravity_executable: None,
+            auto_launch: false,
         }
     }
 }

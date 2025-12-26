@@ -22,7 +22,7 @@ pub async fn handle_generate(
         (model_action, "generateContent".to_string())
     };
 
-    debug!("Received Gemini request: {}/{}", model_name, method);
+    crate::modules::logger::log_info(&format!("Received Gemini request: {}/{}", model_name, method));
 
     // 1. 验证方法
     if method != "generateContent" && method != "streamGenerateContent" {
@@ -39,22 +39,24 @@ pub async fn handle_generate(
     let mut last_error = String::new();
 
     for attempt in 0..max_attempts {
-        // 3. 模型路由解析
+        // 3. 模型路由与配置解析
         let mapped_model = crate::proxy::common::model_mapping::resolve_model_route(
             &model_name,
             &*state.custom_mapping.read().await,
             &*state.openai_mapping.read().await,
             &*state.anthropic_mapping.read().await,
         );
+        let config = crate::proxy::mappers::common_utils::resolve_request_config(&model_name, &mapped_model);
 
-        // 4. 获取 Token
-        let model_group = crate::proxy::common::utils::infer_quota_group(&mapped_model);
-        let (access_token, project_id) = match token_manager.get_token(&model_group).await {
+        // 4. 获取 Token (使用准确的 request_type)
+        let (access_token, project_id, email) = match token_manager.get_token(&config.request_type, false).await {
             Ok(t) => t,
             Err(e) => {
                 return Err((StatusCode::SERVICE_UNAVAILABLE, format!("Token error: {}", e)));
             }
         };
+
+        tracing::info!("Using account: {} for request (type: {})", email, config.request_type);
 
         // 5. 包装请求 (project injection)
         let wrapped_body = wrap_request(&body, &project_id, &mapped_model);
@@ -165,8 +167,8 @@ pub async fn handle_generate(
  
         // 只有 429 (限流), 403 (权限/地区限制) 和 401 (认证失效) 触发账号轮换
         if status_code == 429 || status_code == 403 || status_code == 401 {
-            // 如果是 429 且标记为配额耗尽，直接报错，避免穿透整个账号池
-            if status_code == 429 && (error_text.contains("QUOTA_EXHAUSTED") || error_text.contains("quota")) {
+            // 只有明确包含 "QUOTA_EXHAUSTED" 才停止，避免误判上游的频率限制提示 (如 "check quota")
+            if status_code == 429 && error_text.contains("QUOTA_EXHAUSTED") {
                 error!("Gemini Quota exhausted (429) on attempt {}/{}, stopping to protect pool.", attempt + 1, max_attempts);
                 return Err((status, error_text));
             }
@@ -185,7 +187,7 @@ pub async fn handle_generate(
 
 pub async fn handle_list_models(State(state): State<AppState>) -> Result<impl IntoResponse, (StatusCode, String)> {
     let model_group = "gemini";
-    let (access_token, _) = state.token_manager.get_token(model_group).await
+    let (access_token, _, _) = state.token_manager.get_token(model_group, false).await
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, format!("Token error: {}", e)))?;
 
     // Fetch from upstream
@@ -235,8 +237,8 @@ pub async fn handle_get_model(Path(model_name): Path<String>) -> impl IntoRespon
 }
 
 pub async fn handle_count_tokens(State(state): State<AppState>, Path(_model_name): Path<String>, Json(_body): Json<Value>) -> Result<impl IntoResponse, (StatusCode, String)> {
-     let model_group = "gemini";
-    let (_access_token, _project_id) = state.token_manager.get_token(model_group).await
+    let model_group = "gemini";
+    let (_access_token, _project_id, _) = state.token_manager.get_token(model_group, false).await
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, format!("Token error: {}", e)))?;
     
     Ok(Json(json!({"totalTokens": 0})))

@@ -7,6 +7,7 @@ pub mod error;
 
 use tauri::Manager;
 use modules::logger;
+use tracing::{info, error};
 
 // 测试命令
 #[tauri::command]
@@ -23,6 +24,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--minimized"]),
+        ))
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let _ = app.get_webview_window("main")
                 .map(|window| {
@@ -34,9 +39,9 @@ pub fn run() {
         }))
         .manage(commands::proxy::ProxyServiceState::new())
         .setup(|app| {
-            println!("Setup starting...");
+            info!("Setup starting...");
             modules::tray::create_tray(app.handle())?;
-            println!("Tray created");
+            info!("Tray created");
             
             // 自动启动反代服务
             let handle = app.handle().clone();
@@ -51,9 +56,9 @@ pub fn run() {
                             state,
                             handle.clone(),
                         ).await {
-                            eprintln!("自动启动反代服务失败: {}", e);
+                            error!("自动启动反代服务失败: {}", e);
                         } else {
-                            println!("反代服务自动启动成功");
+                            info!("反代服务自动启动成功");
                         }
                     }
                 }
@@ -88,10 +93,13 @@ pub fn run() {
             commands::load_config,
             commands::save_config,
             // 新增命令
+            commands::prepare_oauth_url,
             commands::start_oauth_login,
+            commands::complete_oauth_login,
             commands::cancel_oauth_login,
             commands::import_v1_accounts,
             commands::import_from_db,
+            commands::import_custom_db,
             commands::sync_account_from_db,
             commands::save_text_file,
             commands::clear_log_cache,
@@ -108,6 +116,9 @@ pub fn run() {
             commands::proxy::generate_api_key,
             commands::proxy::reload_proxy_accounts,
             commands::proxy::update_model_mapping,
+            // Autostart 命令
+            commands::autostart::toggle_auto_launch,
+            commands::autostart::is_auto_launch_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

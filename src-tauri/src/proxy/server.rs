@@ -1,14 +1,15 @@
 use axum::{
     Router,
     routing::{get, post},
-    extract::{State, DefaultBodyLimit},
-    response::{IntoResponse, Response, sse::{Event, Sse}},
-    http::StatusCode,
-    Json,
+    extract::DefaultBodyLimit,
+    response::{IntoResponse, Response, Json},
 };
+use tracing::{debug, error};
+use tower_http::trace::TraceLayer;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use crate::proxy::TokenManager;
+
 
 /// Axum 应用状态
 #[derive(Clone)]
@@ -17,8 +18,11 @@ pub struct AppState {
     pub anthropic_mapping: Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
     pub openai_mapping: Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
     pub custom_mapping: Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
+    #[allow(dead_code)]
     pub request_timeout: u64,  // API 请求超时(秒)
+    #[allow(dead_code)]
     pub thought_signature_map: Arc<tokio::sync::Mutex<std::collections::HashMap<String, String>>>, // 思维链签名映射 (ID -> Signature)
+    #[allow(dead_code)]
     pub upstream_proxy: Arc<tokio::sync::RwLock<crate::proxy::config::UpstreamProxyConfig>>,
     pub upstream: Arc<crate::proxy::upstream::client::UpstreamClient>,
 }
@@ -57,12 +61,13 @@ impl AxumServer {
     }
     /// 启动 Axum 服务器
     pub async fn start(
+        host: String,
         port: u16,
         token_manager: Arc<TokenManager>,
         anthropic_mapping: std::collections::HashMap<String, String>,
         openai_mapping: std::collections::HashMap<String, String>,
         custom_mapping: std::collections::HashMap<String, String>,
-        request_timeout: u64,
+        _request_timeout: u64,
         upstream_proxy: crate::proxy::config::UpstreamProxyConfig,
     ) -> Result<(Self, tokio::task::JoinHandle<()>), String> {
         let mapping_state = Arc::new(tokio::sync::RwLock::new(anthropic_mapping));
@@ -88,6 +93,8 @@ impl AxumServer {
             // OpenAI Protocol
             .route("/v1/models", get(handlers::openai::handle_list_models))
             .route("/v1/chat/completions", post(handlers::openai::handle_chat_completions))
+            .route("/v1/completions", post(handlers::openai::handle_completions))
+            .route("/v1/responses", post(handlers::openai::handle_completions)) // 兼容 Codex CLI
             
             // Claude Protocol
             .route("/v1/messages", post(handlers::claude::handle_messages))
@@ -101,20 +108,21 @@ impl AxumServer {
             .route("/v1beta/models/:model/countTokens", post(handlers::gemini::handle_count_tokens)) // Specific route priority
             .route("/healthz", get(health_check_handler))
             .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
+            .layer(TraceLayer::new_for_http())
             .layer(axum::middleware::from_fn(crate::proxy::middleware::auth_middleware))
             .layer(crate::proxy::middleware::cors_layer())
             .with_state(state);
         
         // 绑定地址
-        let addr = format!("127.0.0.1:{}", port);
+        let addr = format!("{}:{}", host, port);
         let listener = tokio::net::TcpListener::bind(&addr)
             .await
-            .map_err(|e| format!("端口 {} 绑定失败: {}", port, e))?;
+            .map_err(|e| format!("地址 {} 绑定失败: {}", addr, e))?;
         
         tracing::info!("反代服务器启动在 http://{}", addr);
         
         // 创建关闭通道
-        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
         
         let server_instance = Self {
             shutdown_tx: Some(shutdown_tx),
@@ -126,12 +134,39 @@ impl AxumServer {
         
         // 在新任务中启动服务器
         let handle = tokio::spawn(async move {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(async {
-                    shutdown_rx.await.ok();
-                })
-                .await
-                .ok();
+            use hyper_util::rt::TokioIo;
+            use hyper::server::conn::http1;
+            use hyper_util::service::TowerToHyperService;
+
+            loop {
+                tokio::select! {
+                    res = listener.accept() => {
+                        match res {
+                            Ok((stream, _)) => {
+                                let io = TokioIo::new(stream);
+                                let service = TowerToHyperService::new(app.clone());
+                                
+                                tokio::task::spawn(async move {
+                                    if let Err(err) = http1::Builder::new()
+                                        .serve_connection(io, service)
+                                        .with_upgrades() // 支持 WebSocket (如果以后需要)
+                                        .await
+                                    {
+                                        debug!("连接处理结束或出错: {:?}", err);
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                error!("接收连接失败: {:?}", e);
+                            }
+                        }
+                    }
+                    _ = &mut shutdown_rx => {
+                        tracing::info!("反代服务器停止监听");
+                        break;
+                    }
+                }
+            }
         });
         
         Ok((
